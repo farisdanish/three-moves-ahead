@@ -7,6 +7,7 @@
   "scripts": {
     "build": "vite build",
     "deploy": "npm run test:types && npm run lint && devvit upload",
+    "deploy:dev": "npm run test:unit && npm run deploy && devvit install three_moves_ahead_dev",
     "dev": "devvit playtest",
     "launch": "npm run deploy && devvit publish",
     "lint": "eslint 'src/**/*.{ts,tsx}'",
