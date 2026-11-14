@@ -98,6 +98,26 @@ export function formatUtcDayId(date: Date = new Date()): string {
 }
 
 /**
+ * Returns true if `utcDayId` is a valid calendar `YYYY-MM-DD` UTC day ID.
+ */
+export function isValidUtcDayId(utcDayId: string): boolean {
+  try {
+    parseUtcDayIndex(utcDayId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns the previous calendar `YYYY-MM-DD` UTC day ID (`D - 1`).
+ */
+export function previousUtcDayId(utcDayId: string): string {
+  const dayIndex = parseUtcDayIndex(utcDayId);
+  return new Date((dayIndex - 1) * MS_PER_UTC_DAY).toISOString().slice(0, 10);
+}
+
+/**
  * Resolves one head-to-head move exchange using the combat triangle:
  * Attack (`A`) beats Counter (`C`), Counter (`C`) beats Defend (`D`),
  * Defend (`D`) beats Attack (`A`), and identical moves tie.

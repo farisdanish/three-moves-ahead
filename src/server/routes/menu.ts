@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { MenuItemRequest, UiResponse } from '@devvit/web/shared';
 import { context, reddit, redis, settings } from '@devvit/web/server';
-import { createPost } from '../core/post.ts';
+import { createPost, persistHubPostId } from '../core/post.ts';
 import { runSdkSpike } from '../core/sdkSpike.ts';
 
 export const menu = new Hono();
@@ -9,6 +9,7 @@ export const menu = new Hono();
 menu.post('/post-create', async (c) => {
   try {
     const post = await createPost();
+    await persistHubPostId(redis, post.id).catch(() => undefined);
 
     return c.json<UiResponse>(
       {

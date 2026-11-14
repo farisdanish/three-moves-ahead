@@ -45,6 +45,16 @@
   "forms": {
     "exampleForm": "/internal/form/example-submit"
   },
+  "settings": {
+    "global": {
+      "botSeed": {
+        "type": "string",
+        "label": "Bot Seed Secret",
+        "helpText": "Optional global secret seed for daily bot generation and pseudonymous leaderboard handles.",
+        "isSecret": true
+      }
+    }
+  },
   "triggers": {
     "onAppInstall": "/internal/triggers/on-app-install"
   },
