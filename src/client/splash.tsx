@@ -1,22 +1,27 @@
 import './index.css';
 
 import { context, requestExpandedMode } from '@devvit/web/client';
-import { StrictMode } from 'react';
+import { StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   formatUtcDayId,
   getModifierForUtcDate,
   isValidUtcDayId,
   type ModifierId,
-} from '../shared/engine';
+} from '../shared/engine.ts';
+import { useArenaMotion } from './useArenaMotion.ts';
 
 const MODIFIER_LABELS: Record<ModifierId, string> = {
-  classic: 'Classic (Win 2 · Tie 1 · Loss 0)',
-  draw_day: 'Draw Day (Tie 2 · Win 1 · Loss 0)',
-  sweep_bonus: 'Sweep Bonus (+3 on 3 wins)',
+  classic: 'Classic · Win 2 / Tie 1 / Loss 0',
+  draw_day: 'Draw Day · Tie 2 / Win 1 / Loss 0',
+  sweep_bonus: 'Sweep Bonus · +3 on 3 wins',
 };
 
 export const Splash = () => {
+  const { dataMotion, prefersReducedMotion, toggleMotion } = useArenaMotion();
+  const [backdropFailed, setBackdropFailed] = useState<boolean>(false);
+  const [spriteFailed, setSpriteFailed] = useState<boolean>(false);
+
   const utcDayId = formatUtcDayId();
   const modifier = getModifierForUtcDate(utcDayId);
   const rawKind = context.postData?.['kind'];
@@ -28,51 +33,75 @@ export const Splash = () => {
     rawPostDayId < utcDayId;
 
   return (
-    <div className="flex flex-col justify-center items-center min-h-screen gap-3 px-5 py-6 bg-slate-950 text-slate-100">
-      <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-amber-400 font-semibold">
-        <span>Three Moves Ahead</span>
-        <span>·</span>
-        <span>{isArchivedDaily ? `${rawPostDayId} Archived` : `${utcDayId} UTC`}</span>
-      </div>
-
-      <h1 className="text-2xl font-bold text-center leading-tight">
-        Three moves. One prediction. Outsmart yesterday&apos;s crowd.
-      </h1>
-
-      <div className="rounded-lg border border-slate-800 bg-slate-900/90 px-3.5 py-2 text-xs text-slate-200 text-center max-w-sm">
-        {isArchivedDaily ? (
-          <span>
-            This dated daily thread ({rawPostDayId}) has closed. Open to jump to
-            today&apos;s live Evergreen Hub.
-          </span>
-        ) : (
-          <span>
-            Today&apos;s rule:{' '}
-            <strong className="text-amber-300">
-              {MODIFIER_LABELS[modifier]}
-            </strong>
-          </span>
+    <main className="splash-root" data-motion={dataMotion}>
+      <article className="splash-stage-card">
+        {!prefersReducedMotion && (
+          <button
+            type="button"
+            className="splash-motion-btn"
+            aria-pressed={dataMotion === 'on'}
+            onClick={toggleMotion}
+          >
+            {dataMotion === 'on' ? 'Motion: On' : 'Motion: Off'}
+          </button>
         )}
-      </div>
 
-      <p className="text-[11px] text-slate-400 text-center">
-        Attack (A) &gt; Counter (C) &gt; Defend (D) &gt; Attack (A)
-      </p>
+        <div className="splash-scene" aria-hidden="true">
+          {!backdropFailed && (
+            <img
+              src="/art/dojo/arena.webp"
+              alt=""
+              width="1024"
+              height="768"
+              className="splash-backdrop"
+              onError={() => setBackdropFailed(true)}
+            />
+          )}
+          <div className="splash-scrim" />
+          {!spriteFailed && (
+            <img
+              src="/art/dojo/spirit-ready.png"
+              alt=""
+              width="384"
+              height="384"
+              className="splash-hero-sprite spirit-base"
+              onError={() => setSpriteFailed(true)}
+            />
+          )}
+        </div>
 
-      <p className="text-xs text-slate-400 text-center">
-        {context.userId
-          ? `Signed in as u/${context.username ?? 'player'}`
-          : 'Viewing logged out — Practice open, sign in for Ranked'}
-      </p>
+        <div className="splash-panel">
+          <p className="dojo-eyebrow">
+            Three Moves Ahead ·{' '}
+            {isArchivedDaily
+              ? `${rawPostDayId} UTC (Archived)`
+              : `${utcDayId} UTC`}
+          </p>
 
-      <button
-        type="button"
-        className="mt-1 bg-orange-600 hover:bg-orange-500 text-white font-semibold px-5 py-2.5 rounded-full cursor-pointer transition-colors text-sm"
-        onClick={(e) => requestExpandedMode(e.nativeEvent, 'game')}
-      >
-        {isArchivedDaily ? 'Open Archive & Hub Link' : 'Open Daily Arena'}
-      </button>
-    </div>
+          <h1 className="splash-title">
+            {isArchivedDaily
+              ? `This daily dojo (${rawPostDayId} UTC) has closed.`
+              : MODIFIER_LABELS[modifier]}
+          </h1>
+
+          <p className="dojo-meta">
+            {isArchivedDaily
+              ? 'Open to jump straight to today’s Evergreen Hub.'
+              : context.userId
+                ? `Attack > Counter > Defend > Attack · u/${context.username ?? 'player'}`
+                : 'Attack > Counter > Defend > Attack · Sign in for Ranked or play Practice'}
+          </p>
+
+          <button
+            type="button"
+            className="dojo-cta-primary mt-0.5"
+            onClick={(e) => requestExpandedMode(e.nativeEvent, 'game')}
+          >
+            {isArchivedDaily ? 'Open Archive & Hub Link' : 'Open Daily Arena'}
+          </button>
+        </div>
+      </article>
+    </main>
   );
 };
 

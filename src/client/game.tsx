@@ -17,44 +17,35 @@ import type {
   RankedResultPayload,
   RankedSubmitResponse,
   ResultRecoveryResponse,
-} from '../shared/api';
+} from '../shared/api.ts';
 import {
   fetchBoardStateIndependent,
   loadArenaThenBoardIndependent,
-} from '../shared/arenaLoader';
+} from '../shared/arenaLoader.ts';
 import {
   MODIFIER_CYCLE,
-  MOVES,
   type ModifierId,
   type Move,
   type Strategy,
-} from '../shared/engine';
+} from '../shared/engine.ts';
+import { DailyPodium } from './components/DailyPodium.tsx';
+import { DojoStage } from './components/DojoStage.tsx';
+import { type SpiritPose } from './components/SpiritSprite.tsx';
+import { StrategyComposer } from './components/StrategyComposer.tsx';
+import { useArenaMotion } from './useArenaMotion.ts';
 
 type ActiveTab = 'ranked' | 'practice' | 'board';
 
-const MOVE_META: Record<
-  Move,
-  {
-    readonly title: string;
-    readonly beats: string;
-    readonly badgeClass: string;
-  }
-> = {
-  A: {
-    title: 'Attack',
-    beats: 'Beats Counter',
-    badgeClass: 'border-rose-500/60 bg-rose-950/60 text-rose-200',
-  },
-  D: {
-    title: 'Defend',
-    beats: 'Beats Attack',
-    badgeClass: 'border-sky-500/60 bg-sky-950/60 text-sky-200',
-  },
-  C: {
-    title: 'Counter',
-    beats: 'Beats Defend',
-    badgeClass: 'border-emerald-500/60 bg-emerald-950/60 text-emerald-200',
-  },
+const MOVE_TITLES: Record<Move, string> = {
+  A: 'Attack',
+  D: 'Defend',
+  C: 'Counter',
+};
+
+const MOVE_POSES: Record<Move, SpiritPose> = {
+  A: 'attack',
+  D: 'defend',
+  C: 'counter',
 };
 
 const MODIFIER_META: Record<
@@ -84,11 +75,9 @@ const MODIFIER_META: Record<
   },
 };
 
-const SLOT_TITLES: readonly [string, string, string] = [
-  '1 · Opening',
-  '2 · Middle',
-  '3 · Closing',
-];
+function formatMovesFull(moves: readonly Move[]): string {
+  return moves.map((move) => MOVE_TITLES[move]).join(' → ');
+}
 
 function isT3PostId(value: string | null | undefined): value is `t3_${string}` {
   return typeof value === 'string' && value.startsWith('t3_');
@@ -132,75 +121,10 @@ function buildSpoilerSafeShareText(result: RankedResultPayload): string {
   ].join('\n');
 }
 
-const SLOT_INDICES: readonly [0, 1, 2] = [0, 1, 2];
-
-function MoveSelectorGrid(props: {
-  readonly moves: Strategy;
-  readonly onChange: (next: Strategy) => void;
-  readonly disabled?: boolean;
-}) {
-  const { moves, onChange, disabled = false } = props;
-
-  const setSlotMove = (slot: 0 | 1 | 2, move: Move): void => {
-    const next: Strategy = [
-      slot === 0 ? move : moves[0],
-      slot === 1 ? move : moves[1],
-      slot === 2 ? move : moves[2],
-    ];
-    onChange(next);
-  };
-
-  return (
-    <div className="space-y-2.5">
-      {SLOT_INDICES.map((slot) => {
-        const selectedMove = moves[slot];
-        return (
-          <div
-            key={slot}
-            className="rounded-lg border border-slate-800 bg-slate-950/80 p-2.5"
-          >
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-semibold text-slate-300">
-                {SLOT_TITLES[slot]}
-              </span>
-              <span className="text-[11px] font-mono text-amber-300">
-                Selected: {MOVE_META[selectedMove].title} ({selectedMove})
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-1.5">
-              {MOVES.map((move) => {
-                const active = selectedMove === move;
-                const meta = MOVE_META[move];
-                return (
-                  <button
-                    key={move}
-                    type="button"
-                    disabled={disabled}
-                    onClick={() => setSlotMove(slot, move)}
-                    className={`rounded-md border px-2 py-2 text-left transition-colors cursor-pointer disabled:opacity-50 ${
-                      active
-                        ? `${meta.badgeClass} ring-1 ring-amber-400`
-                        : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="text-xs font-bold">
-                      {move} · {meta.title}
-                    </div>
-                    <div className="text-[10px] text-slate-400">
-                      {meta.beats}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export const App = () => {
+  const { motionEnabled, dataMotion, prefersReducedMotion, toggleMotion } =
+    useArenaMotion();
+
   const [arena, setArena] = useState<ArenaResponse | null>(null);
   const [board, setBoard] = useState<BoardResponse | null>(null);
   const [boardError, setBoardError] = useState<string | null>(null);
@@ -208,8 +132,14 @@ export const App = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<ActiveTab>('ranked');
 
+  const [preview, setPreview] = useState<{
+    readonly pose: SpiritPose;
+    readonly eventId: number;
+  }>({ pose: 'ready', eventId: 0 });
+
   const [rankedMoves, setRankedMoves] = useState<Strategy>(['A', 'D', 'C']);
   const [submittingRanked, setSubmittingRanked] = useState<boolean>(false);
+  const [celebrateEventId, setCelebrateEventId] = useState<number>(1);
   const [bannerNotice, setBannerNotice] = useState<{
     readonly tone: 'amber' | 'red' | 'emerald';
     readonly text: string;
@@ -222,7 +152,20 @@ export const App = () => {
     useState<ModifierId>('classic');
   const [practiceResult, setPracticeResult] =
     useState<PracticeResponse | null>(null);
+  const [practiceResultPoseActive, setPracticeResultPoseActive] =
+    useState<boolean>(false);
+  const [practiceRunId, setPracticeRunId] = useState<number>(0);
+  const [practiceReplayStep, setPracticeReplayStep] = useState<number | null>(
+    null
+  );
   const [runningPractice, setRunningPractice] = useState<boolean>(false);
+
+  const previewMove = useCallback((move: Move): void => {
+    setPreview((previous) => ({
+      pose: MOVE_POSES[move],
+      eventId: previous.eventId + 1,
+    }));
+  }, []);
 
   const refreshBoardOnly = useCallback(async () => {
     setBoardLoading(true);
@@ -265,7 +208,7 @@ export const App = () => {
         text:
           err instanceof Error
             ? err.message
-            : 'Unable to load arena state. Please refresh.',
+            : 'Unable to load arena state. Check your connection and try again.',
       });
     } finally {
       setLoading(false);
@@ -302,7 +245,7 @@ export const App = () => {
             text:
               err instanceof Error
                 ? err.message
-                : 'Unable to load arena state. Please refresh.',
+                : 'Unable to load arena state. Check your connection and try again.',
           });
         }
       } finally {
@@ -315,6 +258,41 @@ export const App = () => {
       cancelled = true;
     };
   }, []);
+
+  const effectivePracticeReplayStep =
+    motionEnabled && activeTab === 'practice' ? practiceReplayStep : null;
+
+  // Practice replay choreography: 240ms step pacing with clean cancellation
+  // on tab change, unmount, skip, or motion disabled.
+  useEffect(() => {
+    if (effectivePracticeReplayStep === null) {
+      return;
+    }
+
+    const delayMs = effectivePracticeReplayStep < 2 ? 240 : 320;
+    const timer = window.setTimeout(() => {
+      setPracticeReplayStep((current) => {
+        if (current === null || current >= 2) {
+          return null;
+        }
+        return current + 1;
+      });
+    }, delayMs);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [effectivePracticeReplayStep, practiceRunId]);
+
+  const handleTabChange = (nextTab: ActiveTab): void => {
+    setPracticeReplayStep(null);
+    setActiveTab(nextTab);
+  };
+
+  const handleToggleMotion = (): void => {
+    setPracticeReplayStep(null);
+    toggleMotion();
+  };
 
   const handleLockRankedStrategy = async (
     liveArena: ArenaLiveResponse
@@ -339,10 +317,11 @@ export const App = () => {
           rankedResult: data.result,
           streak: data.result.streak,
         });
+        setCelebrateEventId((prev) => prev + 1);
         showToast(
           data.alreadySubmitted
             ? 'Loaded your locked strategy for today.'
-            : 'Strategy locked!'
+            : 'Strategy locked.'
         );
         void refreshBoardOnly();
         return;
@@ -351,7 +330,6 @@ export const App = () => {
       const errBody: ApiErrorResponse = await res.json();
 
       if (res.status === 409 && errBody.code === 'DAY_ROLLOVER') {
-        // Check read-only recovery in case an in-flight pre-midnight request committed.
         try {
           const recRes = await fetch(
             `/api/result?dayId=${encodeURIComponent(liveArena.dayId)}`
@@ -362,7 +340,7 @@ export const App = () => {
               setRecoveredResult(recData.result);
               setBannerNotice({
                 tone: 'emerald',
-                text: `Recovered your ${recData.dayId} UTC result (${recData.result.rawScore}/${recData.result.maxScore}, Rank #${recData.result.sharedRank}). Arena refreshed to today's new UTC day.`,
+                text: `Recovered your ${recData.dayId} UTC result (${recData.result.rawScore}/${recData.result.maxScore}, Rank #${recData.result.sharedRank}). Arena refreshed to today’s UTC day.`,
               });
               await loadArenaAndBoard(true);
               return;
@@ -374,7 +352,7 @@ export const App = () => {
 
         setBannerNotice({
           tone: 'amber',
-          text: 'Day changed; refresh arena — loaded the new UTC day.',
+          text: 'UTC day changed while the arena was open. Refreshed to today’s challenge.',
         });
         await loadArenaAndBoard(true);
         return;
@@ -395,7 +373,9 @@ export const App = () => {
 
       setBannerNotice({
         tone: 'red',
-        text: errBody.message || `Submission failed (HTTP ${res.status})`,
+        text:
+          errBody.message ||
+          `Submission failed (HTTP ${res.status}). Retry locking your strategy.`,
       });
     } catch (err) {
       setBannerNotice({
@@ -403,7 +383,7 @@ export const App = () => {
         text:
           err instanceof Error
             ? err.message
-            : 'Network error while locking strategy. Please retry.',
+            : 'Network error while locking strategy. Retry your submission.',
       });
     } finally {
       setSubmittingRanked(false);
@@ -412,6 +392,7 @@ export const App = () => {
 
   const handleRunPractice = async (): Promise<void> => {
     setRunningPractice(true);
+    setPracticeReplayStep(null);
     try {
       const res = await fetch('/api/practice', {
         method: 'POST',
@@ -422,13 +403,22 @@ export const App = () => {
         }),
       });
       if (!res.ok) {
-        throw new Error(`Practice request failed (HTTP ${res.status})`);
+        throw new Error(
+          `Practice request failed (HTTP ${res.status}). Try again.`
+        );
       }
       const data: PracticeResponse = await res.json();
       setPracticeResult(data);
+      setPracticeResultPoseActive(true);
+      setPracticeRunId((prev) => prev + 1);
+      if (motionEnabled) {
+        setPracticeReplayStep(0);
+      }
     } catch (err) {
       showToast(
-        err instanceof Error ? err.message : 'Practice duel failed; try again.'
+        err instanceof Error
+          ? err.message
+          : 'Practice duel failed. Try running Practice again.'
       );
     } finally {
       setRunningPractice(false);
@@ -441,7 +431,7 @@ export const App = () => {
     const shareText = buildSpoilerSafeShareText(result);
     try {
       await navigator.clipboard.writeText(shareText);
-      showToast('Spoiler-safe result copied to clipboard!');
+      showToast('Spoiler-safe result copied.');
     } catch {
       showToast('Clipboard access unavailable in this browser.');
     }
@@ -449,141 +439,206 @@ export const App = () => {
 
   if (loading && !arena) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 p-4 flex items-center justify-center">
-        <div className="rounded-xl border border-slate-800 bg-slate-900 px-5 py-4 text-xs text-slate-300">
-          Loading Three Moves Ahead arena…
+      <main
+        className="dojo-root flex items-center justify-center p-4"
+        data-motion={dataMotion}
+      >
+        <div role="status" className="dojo-panel dojo-body max-w-sm text-center">
+          Loading Three Moves Ahead dojo…
         </div>
-      </div>
+      </main>
     );
   }
 
   if (arena?.postMode === 'archived') {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 p-4 flex flex-col items-center justify-center">
-        <div className="w-full max-w-md rounded-xl border border-amber-700/60 bg-slate-900 p-5 space-y-4">
-          <div className="text-xs uppercase tracking-widest text-amber-400 font-semibold">
+      <main
+        className="dojo-root flex flex-col items-center justify-center p-4"
+        data-motion={dataMotion}
+      >
+        <section
+          aria-label="Archived daily arena"
+          className="dojo-panel w-full max-w-md space-y-3"
+        >
+          <DojoStage
+            pose="ready"
+            eventId={0}
+            mode="ranked"
+            caption={`Archived post · ${arena.archivedDayId} UTC`}
+          />
+          <p className="dojo-eyebrow">
             Archived Daily Post · {arena.archivedDayId} UTC
-          </div>
-          <h1 className="text-xl font-bold">
-            This daily arena ({arena.archivedDayId}) has closed
+          </p>
+          <h1 className="dojo-title">
+            This daily arena ({arena.archivedDayId} UTC) has closed
           </h1>
-          <p className="text-xs text-slate-300 leading-relaxed">
-            Ranked entries lock per UTC day. Today&apos;s active arena is{' '}
-            <span className="font-mono text-white">{arena.serverDayId} UTC</span>{' '}
+          <p className="dojo-body">
+            Ranked entries lock once per UTC day. Today’s live arena is{' '}
+            <strong className="dojo-num text-amber-200">
+              {arena.serverDayId} UTC
+            </strong>{' '}
             on the Evergreen Hub.
           </p>
           <button
             type="button"
             onClick={() => openRedditPostOrUrl(arena.hubPostId, arena.hubUrl)}
-            className="w-full rounded-lg bg-orange-600 hover:bg-orange-500 text-white font-semibold py-2.5 px-4 text-sm cursor-pointer transition-colors"
+            className="dojo-cta-primary cursor-pointer"
           >
-            Play Today&apos;s Arena
+            Play Today’s Arena
           </button>
-        </div>
-      </div>
+        </section>
+      </main>
     );
   }
 
   if (!arena) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 p-4 flex flex-col items-center justify-center">
-        <div className="w-full max-w-md rounded-xl border border-red-800 bg-slate-900 p-5 space-y-3">
-          <div className="text-sm font-semibold text-red-300">
-            {bannerNotice?.text ?? 'Could not load arena state.'}
-          </div>
+      <main
+        className="dojo-root flex flex-col items-center justify-center p-4"
+        data-motion={dataMotion}
+      >
+        <section
+          role="alert"
+          aria-label="Arena load error"
+          className="dojo-panel w-full max-w-md border-red-800 space-y-3"
+        >
+          <h1 className="dojo-heading text-red-200">Unable to load arena</h1>
+          <p className="dojo-body text-red-100">
+            {bannerNotice?.text ??
+              'Could not load today’s arena state. Check your connection and retry.'}
+          </p>
           <button
             type="button"
             onClick={() => void loadArenaAndBoard()}
-            className="rounded-lg bg-slate-800 hover:bg-slate-700 px-4 py-2 text-xs font-semibold cursor-pointer"
+            className="dojo-cta-secondary cursor-pointer"
           >
-            Retry
+            Retry loading arena
           </button>
-        </div>
-      </div>
+        </section>
+      </main>
     );
   }
 
   const modMeta = MODIFIER_META[arena.modifier];
   const rankedResult = arena.rankedResult;
 
+  const rankedStagePose: SpiritPose = rankedResult ? 'celebrate' : preview.pose;
+  const rankedStageEventId = rankedResult ? celebrateEventId : preview.eventId;
+
+  const activePracticeSlot =
+    practiceResult && effectivePracticeReplayStep !== null
+      ? practiceResult.slots[effectivePracticeReplayStep]
+      : undefined;
+
+  const practiceStagePose: SpiritPose = activePracticeSlot
+    ? MOVE_POSES[activePracticeSlot.playerMove]
+    : practiceResult && practiceResultPoseActive && practiceResult.wins >= 2
+      ? 'celebrate'
+      : preview.pose;
+
+  const practiceStageEventId = activePracticeSlot
+    ? practiceRunId * 10 + (effectivePracticeReplayStep ?? 0)
+    : practiceResult && practiceResultPoseActive
+      ? practiceRunId
+      : preview.eventId;
+
+  const practiceStageBadge = activePracticeSlot
+    ? `Turn ${activePracticeSlot.slot + 1}: ${activePracticeSlot.outcome} (+${activePracticeSlot.pointsEarned})`
+    : null;
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 px-3 py-3 sm:px-5 sm:py-4 flex flex-col items-center">
-      <div className="w-full max-w-lg space-y-3">
-        {/* Top Header Card */}
-        <header className="rounded-xl border border-slate-800 bg-slate-900 p-3.5 space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-[11px] uppercase tracking-wider font-semibold text-amber-400">
-              Three Moves Ahead · {arena.dayId} UTC
-            </div>
-            <div className="flex items-center gap-1.5 text-[11px]">
-              {arena.streak && (
-                <span className="rounded-full border border-orange-500/40 bg-orange-950/60 px-2 py-0.5 text-orange-200 font-semibold">
-                  Streak: {arena.streak.currentCount}d
-                </span>
-              )}
-              <span className="rounded-full border border-slate-700 bg-slate-950 px-2 py-0.5 text-slate-300">
-                {arena.composition.isStarterArena
-                  ? 'Starter Arena · 0 people + 9 bots'
-                  : `${arena.composition.humans} people + ${arena.composition.bots} bots`}
+    <main className="dojo-root" data-motion={dataMotion}>
+      <div className="dojo-shell">
+        <p role="status" className="sr-only">
+          {submittingRanked
+            ? 'Locking strategy…'
+            : rankedResult
+              ? `Strategy locked. Score ${rankedResult.rawScore} out of ${rankedResult.maxScore}.`
+              : ''}
+        </p>
+
+        {/* Compact Top Bar & Rule Strip */}
+        <header className="dojo-topbar">
+          <div className="dojo-topbar__row">
+            <h1 className="dojo-title">Three Moves Ahead</h1>
+
+            <button
+              type="button"
+              className="dojo-motion-btn shrink-0"
+              aria-pressed={dataMotion === 'on'}
+              onClick={handleToggleMotion}
+              title={
+                prefersReducedMotion
+                  ? 'Motion is off because your system prefers reduced motion'
+                  : 'Toggle stage and sprite animations for this session'
+              }
+            >
+              {prefersReducedMotion
+                ? 'Motion: Reduced'
+                : dataMotion === 'on'
+                  ? 'Motion: On'
+                  : 'Motion: Off'}
+            </button>
+          </div>
+
+          <p className="dojo-eyebrow dojo-num">
+            {arena.dayId} UTC · {modMeta.name} ({modMeta.shortRule})
+          </p>
+
+          <div className="dojo-topbar__actions">
+            {arena.streak && (
+              <span className="dojo-pill dojo-pill--streak dojo-num">
+                Streak {arena.streak.currentCount}d
               </span>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h1 className="text-base sm:text-lg font-bold text-white">
-              Modifier: {modMeta.name}{' '}
-              <span className="text-xs font-normal text-amber-300">
-                ({modMeta.shortRule})
-              </span>
-            </h1>
-          </div>
-          <p className="text-xs text-slate-300">{modMeta.detail}</p>
-
-          {/* Combat Cheat Sheet */}
-          <div className="rounded-lg border border-slate-800 bg-slate-950/90 px-2.5 py-1.5 text-[11px] text-slate-300 flex flex-wrap items-center justify-between gap-1">
-            <span className="font-semibold text-slate-200">Cheat Sheet:</span>
-            <span>Attack (A) &gt; Counter (C)</span>
-            <span>·</span>
-            <span>Counter (C) &gt; Defend (D)</span>
-            <span>·</span>
-            <span>Defend (D) &gt; Attack (A)</span>
-          </div>
-
-          {/* Historical Crowd Clue */}
-          <div className="rounded-lg border border-indigo-900/60 bg-indigo-950/30 px-2.5 py-1.5 text-xs text-indigo-200">
-            <span className="font-semibold text-indigo-300">
-              Yesterday&apos;s Crowd Clue:{' '}
+            )}
+            <span className="dojo-pill dojo-num">
+              {arena.composition.isStarterArena
+                ? 'Starter Arena · 0 people + 9 bots'
+                : `${arena.composition.humans} people + ${arena.composition.bots} bots`}
             </span>
-            <span>{arena.hint.message}</span>
+            <details className="dojo-rules-disclosure">
+              <summary className="dojo-rules-summary">Rules</summary>
+              <div className="pt-1 space-y-1">
+                <p className="dojo-meta">{modMeta.detail}</p>
+                <p className="dojo-meta">
+                  Combat triangle: Attack beats Counter · Counter beats Defend ·
+                  Defend beats Attack.
+                </p>
+              </div>
+            </details>
           </div>
         </header>
 
         {/* Status / Rollover / Recovery Banner */}
         {bannerNotice && (
           <div
-            className={`rounded-lg border px-3 py-2 text-xs flex items-center justify-between gap-2 ${
+            role={bannerNotice.tone === 'red' ? 'alert' : 'status'}
+            className={`rounded-xl border px-3.5 py-2.5 dojo-meta flex flex-wrap items-center justify-between gap-2.5 ${
               bannerNotice.tone === 'emerald'
-                ? 'border-emerald-700 bg-emerald-950/70 text-emerald-100'
+                ? 'border-emerald-700 bg-emerald-950/75 text-emerald-100'
                 : bannerNotice.tone === 'amber'
-                  ? 'border-amber-700 bg-amber-950/70 text-amber-100'
-                  : 'border-red-800 bg-red-950/70 text-red-100'
+                  ? 'border-amber-700 bg-amber-950/75 text-amber-100'
+                  : 'border-red-800 bg-red-950/85 text-red-100'
             }`}
           >
             <span>{bannerNotice.text}</span>
             <button
               type="button"
               onClick={() => void loadArenaAndBoard()}
-              className="shrink-0 rounded bg-slate-900/80 px-2 py-1 text-[11px] font-semibold hover:bg-slate-800 cursor-pointer"
+              className="dojo-cta-secondary shrink-0 cursor-pointer"
             >
-              Refresh
+              Refresh arena
             </button>
           </div>
         )}
 
         {/* Recovered Pre-Midnight Result Notice */}
         {recoveredResult && (
-          <div className="rounded-lg border border-emerald-800/80 bg-emerald-950/40 p-2.5 text-xs text-emerald-200 flex items-center justify-between gap-2">
-            <span>
+          <div
+            role="status"
+            className="rounded-xl border border-emerald-700/80 bg-emerald-950/50 px-3.5 py-2.5 dojo-meta text-emerald-100 flex flex-wrap items-center justify-between gap-2.5"
+          >
+            <span className="dojo-num">
               Recovered {recoveredResult.dayId}:{' '}
               <strong>
                 {recoveredResult.rawScore}/{recoveredResult.maxScore}
@@ -594,123 +649,126 @@ export const App = () => {
             <button
               type="button"
               onClick={() => void handleCopyResult(recoveredResult)}
-              className="rounded border border-emerald-600 px-2 py-1 text-[11px] font-semibold hover:bg-emerald-900/50 cursor-pointer"
+              className="dojo-cta-secondary cursor-pointer"
             >
-              Copy {recoveredResult.dayId}
+              Copy {recoveredResult.dayId} result
             </button>
           </div>
         )}
 
-        {/* Navigation Tabs */}
-        <nav className="grid grid-cols-3 gap-1.5 rounded-xl border border-slate-800 bg-slate-900 p-1">
+        {/* Section Navigation */}
+        <nav aria-label="Arena sections" className="dojo-nav">
           <button
             type="button"
-            onClick={() => setActiveTab('ranked')}
-            className={`rounded-lg py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
-              activeTab === 'ranked'
-                ? 'bg-orange-600 text-white'
-                : 'text-slate-300 hover:bg-slate-800'
-            }`}
+            aria-pressed={activeTab === 'ranked'}
+            onClick={() => handleTabChange('ranked')}
+            className={`dojo-tab${activeTab === 'ranked' ? ' dojo-tab--active' : ''}`}
           >
-            {rankedResult ? 'Today’s Result' : 'Ranked Arena'}
+            Arena
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('practice')}
-            className={`rounded-lg py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
-              activeTab === 'practice'
-                ? 'bg-orange-600 text-white'
-                : 'text-slate-300 hover:bg-slate-800'
-            }`}
+            aria-pressed={activeTab === 'practice'}
+            onClick={() => handleTabChange('practice')}
+            className={`dojo-tab${activeTab === 'practice' ? ' dojo-tab--active' : ''}`}
           >
-            Unranked Practice
+            Practice
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('board')}
-            className={`rounded-lg py-1.5 text-xs font-semibold transition-colors cursor-pointer ${
-              activeTab === 'board'
-                ? 'bg-orange-600 text-white'
-                : 'text-slate-300 hover:bg-slate-800'
-            }`}
+            aria-pressed={activeTab === 'board'}
+            onClick={() => handleTabChange('board')}
+            className={`dojo-tab${activeTab === 'board' ? ' dojo-tab--active' : ''}`}
           >
-            Leaderboard ({boardError ? '!' : (board?.totalPlayers ?? '…')})
+            Leaders
           </button>
         </nav>
 
-        {/* TAB 1: RANKED ARENA & RESULT CARD */}
+        {/* Ranked Arena & Result Scorecard */}
         {activeTab === 'ranked' && (
-          <section className="rounded-xl border border-slate-800 bg-slate-900 p-3.5 space-y-3">
+          <section
+            aria-label="Ranked arena"
+            aria-busy={submittingRanked}
+            className="dojo-panel"
+          >
+            <DojoStage
+              pose={rankedStagePose}
+              eventId={rankedStageEventId}
+              mode="ranked"
+              caption={
+                rankedResult
+                  ? `Daily seal stamped · ${rankedResult.dayId} UTC`
+                  : 'Nine stored echoes. One daily challenge.'
+              }
+            />
+
+            <p className="dojo-clue-bar">
+              <strong className="text-teal-200">Yesterday’s crowd clue: </strong>
+              <span>{arena.hint.message}</span>
+            </p>
+
             {rankedResult ? (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                  <div>
-                    <div className="text-[11px] uppercase tracking-wider text-emerald-400 font-semibold">
+              <div className="ranked-seal-reveal space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-700/80 pb-3">
+                  <div className="space-y-0.5">
+                    <p className="dojo-meta font-semibold text-emerald-300">
                       Strategy Locked · {rankedResult.dayId} UTC
-                    </div>
-                    <h2 className="text-base font-bold text-white">
-                      Moves: {rankedResult.moves.join(' → ')}
+                    </p>
+                    <h2 className="dojo-heading">
+                      {formatMovesFull(rankedResult.moves)}
                     </h2>
                   </div>
-                  <div className="text-right">
-                    <div className="text-lg font-extrabold text-amber-300">
+                  <div className="text-left sm:text-right">
+                    <div className="dojo-score">
                       {rankedResult.rawScore} / {rankedResult.maxScore}
                     </div>
-                    <div className="text-[11px] text-slate-400">
+                    <div className="dojo-meta dojo-num">
                       Normalized: {rankedResult.normalizedScore}%
                     </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                  <div className="rounded-lg border border-slate-800 bg-slate-950 p-2">
-                    <div className="text-[10px] text-slate-400 uppercase">
-                      Shared Rank
-                    </div>
-                    <div className="font-bold text-white mt-0.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div className="dojo-stat-card">
+                    <div className="dojo-meta">Shared Rank</div>
+                    <div className="text-base font-bold text-white dojo-num mt-0.5">
                       {rankedResult.totalPlayers <= 1
-                        ? '1st of 1 (First!)'
+                        ? '1st of 1 (First challenger today)'
                         : `#${rankedResult.sharedRank} of ${rankedResult.totalPlayers}`}
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-slate-800 bg-slate-950 p-2">
-                    <div className="text-[10px] text-slate-400 uppercase">
-                      27 Exchanges
-                    </div>
-                    <div className="font-bold text-white mt-0.5">
+                  <div className="dojo-stat-card">
+                    <div className="dojo-meta">27 Exchanges</div>
+                    <div className="text-base font-bold text-white dojo-num mt-0.5">
                       {rankedResult.exchangeSummary.wins}W ·{' '}
                       {rankedResult.exchangeSummary.ties}T ·{' '}
                       {rankedResult.exchangeSummary.losses}L
                       {rankedResult.modifier === 'sweep_bonus'
-                        ? ` (${rankedResult.exchangeSummary.sweeps}S)`
+                        ? ` (${rankedResult.exchangeSummary.sweeps} sweeps)`
                         : ''}
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-slate-800 bg-slate-950 p-2">
-                    <div className="text-[10px] text-slate-400 uppercase">
-                      UTC Streak
-                    </div>
-                    <div className="font-bold text-orange-300 mt-0.5">
+                  <div className="dojo-stat-card">
+                    <div className="dojo-meta">UTC Streak</div>
+                    <div className="text-base font-bold text-amber-300 dojo-num mt-0.5">
                       {rankedResult.streak.currentCount}d (Best{' '}
                       {rankedResult.streak.bestCount}d)
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-slate-800 bg-slate-950 p-2">
-                    <div className="text-[10px] text-slate-400 uppercase">
-                      9-Ghost Field
-                    </div>
-                    <div className="font-bold text-slate-200 mt-0.5">
+                  <div className="dojo-stat-card">
+                    <div className="dojo-meta">9-Ghost Field</div>
+                    <div className="text-base font-bold text-slate-100 dojo-num mt-0.5">
                       {rankedResult.composition.isStarterArena
-                        ? 'Starter (9 bots)'
-                        : `${rankedResult.composition.humans}p + ${rankedResult.composition.bots}b`}
+                        ? 'Starter Arena (9 bots)'
+                        : `${rankedResult.composition.humans} people + ${rankedResult.composition.bots} bots`}
                     </div>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 pt-1">
+                <div className="flex flex-wrap items-center gap-2.5 pt-1">
                   <button
                     type="button"
                     onClick={() =>
@@ -719,14 +777,14 @@ export const App = () => {
                         arena.discussionUrl
                       )
                     }
-                    className="flex-1 rounded-lg bg-orange-600 hover:bg-orange-500 text-white font-semibold py-2.5 px-4 text-xs sm:text-sm cursor-pointer transition-colors"
+                    className="dojo-cta-primary flex-1"
                   >
-                    Join today&apos;s discussion
+                    Join today’s discussion
                   </button>
                   <button
                     type="button"
                     onClick={() => void handleCopyResult(rankedResult)}
-                    className="rounded-lg border border-slate-700 bg-slate-950 hover:bg-slate-800 text-slate-200 font-semibold py-2.5 px-3 text-xs cursor-pointer transition-colors"
+                    className="dojo-cta-secondary"
                   >
                     Copy result
                   </button>
@@ -734,52 +792,48 @@ export const App = () => {
               </div>
             ) : (
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-bold text-white">
-                    Pick Your 3-Move Ranked Strategy
-                  </h2>
-                  <span className="text-[11px] text-slate-400">
-                    One entry per UTC day · Repeats allowed
-                  </span>
-                </div>
-
-                <MoveSelectorGrid
+                <StrategyComposer
                   moves={rankedMoves}
                   onChange={setRankedMoves}
                   disabled={submittingRanked}
+                  onPreview={previewMove}
                 />
+
+                <p className="dojo-meta text-center">
+                  Repeats allowed. Lock once per UTC day; cannot be changed today.
+                </p>
 
                 {arena.viewerAuthenticated ? (
                   <button
                     type="button"
                     disabled={submittingRanked}
                     onClick={() => void handleLockRankedStrategy(arena)}
-                    className="w-full rounded-lg bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 text-sm cursor-pointer transition-colors"
+                    className="dojo-cta-primary"
                   >
                     {submittingRanked
-                      ? 'Locking Strategy…'
-                      : `Lock Today’s Strategy (${rankedMoves.join(' → ')})`}
+                      ? 'Locking strategy…'
+                      : `Lock strategy (${formatMovesFull(rankedMoves)})`}
                   </button>
                 ) : (
-                  <div className="rounded-lg border border-amber-700/60 bg-amber-950/30 p-3 space-y-2 text-xs">
-                    <div className="text-amber-200 font-medium">
+                  <div className="rounded-xl border border-amber-700/70 bg-amber-950/35 p-3.5 space-y-2.5">
+                    <p className="dojo-body text-amber-100">
                       You are viewing logged out. Sign in to Reddit to lock a
-                      ranked entry, or test-drive moves in Unranked Practice.
-                    </div>
-                    <div className="flex flex-wrap gap-2">
+                      ranked entry, or test strategies in Practice.
+                    </p>
+                    <div className="flex flex-wrap gap-2.5">
                       <button
                         type="button"
                         onClick={() => showLoginPrompt()}
-                        className="rounded-lg bg-orange-600 hover:bg-orange-500 text-white font-semibold px-3.5 py-2 text-xs cursor-pointer"
+                        className="dojo-cta-primary flex-1"
                       >
-                        Sign in to Play Ranked
+                        Sign in to play ranked
                       </button>
                       <button
                         type="button"
-                        onClick={() => setActiveTab('practice')}
-                        className="rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200 font-semibold px-3.5 py-2 text-xs cursor-pointer"
+                        onClick={() => handleTabChange('practice')}
+                        className="dojo-cta-secondary"
                       >
-                        Try Unranked Practice
+                        Try Practice
                       </button>
                     </div>
                   </div>
@@ -789,51 +843,42 @@ export const App = () => {
           </section>
         )}
 
-        {/* TAB 2: UNRANKED PRACTICE */}
+        {/* Unranked Practice */}
         {activeTab === 'practice' && (
-          <section className="rounded-xl border border-slate-800 bg-slate-900 p-3.5 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-sky-400 font-semibold">
-                  Unranked Mode · Separate Computer Opponent
-                </div>
-                <h2 className="text-sm font-bold text-white">
-                  Practice Duel (Zero Ranked Impact)
-                </h2>
-              </div>
-              <span className="rounded-full border border-sky-700/50 bg-sky-950/60 px-2.5 py-0.5 text-[11px] text-sky-200">
-                Unranked
-              </span>
-            </div>
+          <section
+            aria-label="Unranked practice"
+            aria-busy={runningPractice}
+            className="dojo-panel"
+          >
+            <DojoStage
+              pose={practiceStagePose}
+              eventId={practiceStageEventId}
+              mode="practice"
+              badgeText={practiceStageBadge}
+              caption="Practice against an independent bot (unranked)"
+            />
 
-            {/* Sample Tutorial Helper */}
-            <div className="rounded-lg border border-slate-800 bg-slate-950/80 px-2.5 py-2 text-[11px] text-slate-300">
-              <strong className="text-amber-300">Sample Tutorial:</strong> If an
-              opponent opens with Attack (A), Defend (D) wins Slot 1; on{' '}
-              <em>Draw Day</em>, matching Attack (A) earns 2 pts vs 1 pt for a
-              win.{' '}
-              <span className="text-slate-400">
-                (Tutorial sample only — not live Reddit crowd data.)
-              </span>
-            </div>
-
-            {/* Modifier Toggle */}
-            <div className="space-y-1">
-              <div className="text-xs font-semibold text-slate-300">
-                Practice Rule Modifier (defaults to today&apos;s rule):
-              </div>
-              <div className="grid grid-cols-3 gap-1.5">
+            <div className="space-y-1.5">
+              <p className="dojo-meta font-semibold text-teal-200">
+                Practice Rule Modifier (defaults to today’s rule):
+              </p>
+              <div
+                role="group"
+                aria-label="Practice rule modifier"
+                className="grid grid-cols-3 gap-2"
+              >
                 {MODIFIER_CYCLE.map((modId) => {
                   const active = practiceModifier === modId;
                   return (
                     <button
                       key={modId}
                       type="button"
+                      aria-pressed={active}
                       onClick={() => setPracticeModifier(modId)}
-                      className={`rounded-md border px-2 py-1.5 text-xs font-semibold cursor-pointer transition-colors ${
+                      className={`dojo-control rounded-lg border px-2 py-1.5 text-sm font-semibold cursor-pointer ${
                         active
-                          ? 'border-sky-400 bg-sky-950 text-sky-100'
-                          : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
+                          ? 'border-teal-300 bg-teal-950/80 text-teal-100'
+                          : 'border-slate-700 bg-slate-950/90 text-slate-200 hover:border-slate-500'
                       }`}
                     >
                       {MODIFIER_META[modId].name}
@@ -843,88 +888,132 @@ export const App = () => {
               </div>
             </div>
 
-            <MoveSelectorGrid
+            <StrategyComposer
               moves={practiceMoves}
-              onChange={setPracticeMoves}
+              onChange={(next) => {
+                setPracticeReplayStep(null);
+                setPracticeResultPoseActive(false);
+                setPracticeMoves(next);
+              }}
               disabled={runningPractice}
+              onPreview={(move) => {
+                setPracticeReplayStep(null);
+                setPracticeResultPoseActive(false);
+                previewMove(move);
+              }}
             />
 
-            <button
-              type="button"
-              disabled={runningPractice}
-              onClick={() => void handleRunPractice()}
-              className="w-full rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-bold py-2.5 px-4 text-sm cursor-pointer transition-colors"
-            >
-              {runningPractice
-                ? 'Simulating Practice Duel…'
-                : `Run Unranked Practice (${practiceMoves.join(' → ')})`}
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={runningPractice}
+                onClick={() => void handleRunPractice()}
+                className="dojo-cta-practice flex-1"
+              >
+                {runningPractice
+                  ? 'Simulating Practice Duel…'
+                  : `Run Practice (${formatMovesFull(practiceMoves)})`}
+              </button>
+              {effectivePracticeReplayStep !== null && (
+                <button
+                  type="button"
+                  onClick={() => setPracticeReplayStep(null)}
+                  className="dojo-cta-secondary shrink-0"
+                >
+                  Skip animation
+                </button>
+              )}
+            </div>
 
             {practiceResult && (
-              <div className="rounded-lg border border-sky-800/60 bg-slate-950 p-3 space-y-2 text-xs">
-                <div className="flex items-center justify-between font-semibold text-sky-200">
-                  <span>
+              <div
+                role="status"
+                className="rounded-xl border border-teal-700/70 bg-slate-950/95 p-3.5 space-y-2.5"
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="text-base font-bold text-teal-200">
                     Practice Result ({MODIFIER_META[practiceResult.modifier].name})
                   </span>
-                  <span>
+                  <span className="text-lg font-extrabold text-amber-300 dojo-num">
                     {practiceResult.rawScore} / {practiceResult.maxScore} pts (
                     {practiceResult.normalizedScore}%)
-                    {practiceResult.swept ? ' · SWEEP +3!' : ''}
+                    {practiceResult.swept ? ' · Sweep +3' : ''}
                   </span>
                 </div>
-                <div className="grid grid-cols-3 gap-1.5">
-                  {practiceResult.slots.map((slotItem) => (
-                    <div
-                      key={slotItem.slot}
-                      className="rounded border border-slate-800 bg-slate-900 p-2 text-center"
-                    >
-                      <div className="text-[10px] text-slate-400">
-                        Slot {slotItem.slot + 1}
+                <div className="practice-slots-grid">
+                  {practiceResult.slots.map((slotItem) => {
+                    const isActiveStep =
+                      effectivePracticeReplayStep === slotItem.slot;
+                    const isPendingStep =
+                      effectivePracticeReplayStep !== null &&
+                      slotItem.slot > effectivePracticeReplayStep;
+                    return (
+                      <div
+                        key={slotItem.slot}
+                        className={`practice-slot-card${
+                          isActiveStep ? ' practice-slot-card--active' : ''
+                        }${isPendingStep ? ' practice-slot-card--pending' : ''}`}
+                      >
+                        <div className="dojo-meta">
+                          Turn {slotItem.slot + 1}
+                        </div>
+                        <div className="text-sm font-bold text-white mt-0.5">
+                          You: {MOVE_TITLES[slotItem.playerMove]} vs Bot:{' '}
+                          {MOVE_TITLES[slotItem.botMove]}
+                        </div>
+                        <div className="dojo-meta dojo-num text-amber-300 capitalize mt-0.5">
+                          {slotItem.outcome} (+{slotItem.pointsEarned})
+                        </div>
                       </div>
-                      <div className="font-mono font-bold text-white mt-0.5">
-                        You {slotItem.playerMove} vs Bot {slotItem.botMove}
-                      </div>
-                      <div className="text-[11px] text-amber-300 capitalize">
-                        {slotItem.outcome} (+{slotItem.pointsEarned})
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
           </section>
         )}
 
-        {/* TAB 3: LEADERBOARD */}
+        {/* Daily Leaderboard */}
         {activeTab === 'board' && (
-          <section className="rounded-xl border border-slate-800 bg-slate-900 p-3.5 space-y-3">
-            <div className="flex items-center justify-between">
+          <section
+            aria-label="Daily leaderboard"
+            aria-busy={boardLoading}
+            className="dojo-panel"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-sm font-bold text-white">
+                <h2 className="dojo-heading">
                   Daily Leaderboard · {arena.dayId} UTC
                 </h2>
-                <p className="text-[11px] text-slate-400">
-                  Shared-tie ranks on raw score · Top 50 + your position
+                <p className="dojo-meta">
+                  Shared-tie ranks on raw score ·{' '}
+                  {board ? `${board.totalPlayers} total` : 'Top 50 & your rank'}
                 </p>
               </div>
               <button
                 type="button"
                 disabled={boardLoading}
                 onClick={() => void refreshBoardOnly()}
-                className="rounded border border-slate-700 bg-slate-950 hover:bg-slate-800 disabled:opacity-50 px-2.5 py-1 text-xs font-semibold cursor-pointer"
+                className="dojo-cta-secondary shrink-0"
               >
-                {boardLoading ? 'Refreshing…' : 'Refresh'}
+                {boardLoading ? 'Refreshing…' : 'Refresh leaderboard'}
               </button>
             </div>
 
             {boardError && (
-              <div className="rounded-lg border border-red-800 bg-red-950/70 px-3 py-2.5 text-xs text-red-100 flex items-center justify-between gap-2">
-                <span>Unable to load leaderboard: {boardError}</span>
+              <div
+                role="alert"
+                className="dojo-alert flex flex-wrap items-center justify-between gap-2.5"
+              >
+                <span className="dojo-meta text-red-100">
+                  Unable to load the daily leaderboard ({boardError}). Ranked
+                  Arena and Practice still work.
+                </span>
                 <button
                   type="button"
                   disabled={boardLoading}
                   onClick={() => void refreshBoardOnly()}
-                  className="shrink-0 rounded bg-slate-900/90 hover:bg-slate-800 px-2.5 py-1 text-[11px] font-semibold cursor-pointer"
+                  className="dojo-cta-secondary shrink-0"
                 >
                   Retry Leaderboard
                 </button>
@@ -932,28 +1021,30 @@ export const App = () => {
             )}
 
             {board && board.rows.length > 0 ? (
-              <div className="space-y-2">
-                <div className="max-h-64 overflow-y-auto rounded-lg border border-slate-800 divide-y divide-slate-800/80 bg-slate-950">
+              <div className="space-y-3">
+                <DailyPodium rows={board.rows} />
+
+                <div className="max-h-72 overflow-y-auto rounded-xl border border-slate-700/80 divide-y divide-slate-800/90 bg-slate-950/95">
                   {board.rows.map((row, idx) => (
                     <div
                       key={`${row.label}-${idx}`}
-                      className={`flex items-center justify-between px-3 py-2 text-xs ${
+                      className={`flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3.5 py-2.5 dojo-meta ${
                         row.isCurrentUser
-                          ? 'bg-orange-950/40 text-orange-200 font-semibold'
-                          : 'text-slate-200'
+                          ? 'border-l-4 border-l-orange-400 bg-orange-950/45 text-orange-100 font-semibold'
+                          : 'text-slate-100'
                       }`}
                     >
-                      <div className="flex items-center gap-2.5">
-                        <span className="font-mono text-amber-300 w-10">
+                      <div className="flex flex-wrap items-baseline gap-2.5">
+                        <span className="font-mono dojo-num text-amber-300 min-w-10 shrink-0">
                           #{row.sharedRank}
                         </span>
-                        <span>{row.label}</span>
+                        <span className="break-words">{row.label}</span>
                       </div>
-                      <div className="font-mono text-right">
+                      <div className="font-mono dojo-num text-right shrink-0">
                         <span>
                           {row.rawScore}/{row.maxScore}
                         </span>{' '}
-                        <span className="text-slate-400">
+                        <span className="text-slate-300">
                           ({row.normalizedScore}%)
                         </span>
                       </div>
@@ -963,14 +1054,16 @@ export const App = () => {
 
                 {board.currentUserRow &&
                   !board.rows.some((r) => r.isCurrentUser) && (
-                    <div className="rounded-lg border border-orange-600/60 bg-orange-950/40 px-3 py-2 text-xs flex items-center justify-between font-semibold text-orange-200">
-                      <div className="flex items-center gap-2.5">
-                        <span className="font-mono text-amber-300">
+                    <div className="rounded-xl border border-orange-500/70 bg-orange-950/45 px-3.5 py-2.5 dojo-meta flex flex-wrap items-center justify-between gap-2 font-semibold text-orange-100">
+                      <div className="flex flex-wrap items-baseline gap-2.5">
+                        <span className="font-mono dojo-num text-amber-300">
                           #{board.currentUserRow.sharedRank}
                         </span>
-                        <span>{board.currentUserRow.label} (Outside Top 50)</span>
+                        <span className="break-words">
+                          {board.currentUserRow.label} (Outside Top 50)
+                        </span>
                       </div>
-                      <div className="font-mono">
+                      <div className="font-mono dojo-num">
                         {board.currentUserRow.rawScore}/
                         {board.currentUserRow.maxScore} (
                         {board.currentUserRow.normalizedScore}%)
@@ -979,16 +1072,30 @@ export const App = () => {
                   )}
               </div>
             ) : !boardError ? (
-              <div className="rounded-lg border border-slate-800 bg-slate-950 p-4 text-center text-xs text-slate-400">
-                {boardLoading
-                  ? 'Loading daily leaderboard…'
-                  : `No ranked entries recorded for ${arena.dayId} UTC yet. Be the first challenger today!`}
+              <div
+                role="status"
+                className="rounded-xl border border-slate-700/80 bg-slate-950/90 p-5 text-center space-y-3"
+              >
+                <p className="dojo-body">
+                  {boardLoading
+                    ? 'Loading daily leaderboard…'
+                    : `No ranked entries recorded for ${arena.dayId} UTC yet. Lock your strategy in Ranked Arena to set the first score.`}
+                </p>
+                {!boardLoading && (
+                  <button
+                    type="button"
+                    onClick={() => handleTabChange('ranked')}
+                    className="dojo-cta-secondary"
+                  >
+                    Go to Ranked Arena
+                  </button>
+                )}
               </div>
             ) : null}
           </section>
         )}
       </div>
-    </div>
+    </main>
   );
 };
 
