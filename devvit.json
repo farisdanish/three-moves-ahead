@@ -1,0 +1,58 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "three-moves-ahead",
+  "post": {
+    "dir": "dist/client",
+    "entrypoints": {
+      "default": {
+        "inline": true,
+        "entry": "splash.html"
+      },
+      "game": {
+        "entry": "game.html"
+      }
+    }
+  },
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "Create a new post",
+        "description": "three-moves-ahead",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/post-create"
+      },
+      {
+        "label": "Example form",
+        "description": "Show a simple form",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/example-form"
+      },
+      {
+        "label": "SDK Verification Spike",
+        "description": "Verify Devvit Redis, settings, and comment/pin permissions",
+        "location": "post",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/sdk-spike"
+      }
+    ]
+  },
+  "forms": {
+    "exampleForm": "/internal/form/example-submit"
+  },
+  "triggers": {
+    "onAppInstall": "/internal/triggers/on-app-install"
+  },
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "vite build"
+  },
+  "dev": {
+    "subreddit": "three_moves_ahead_dev"
+  }
+}
