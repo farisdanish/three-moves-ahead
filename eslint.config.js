@@ -24,7 +24,7 @@ export default defineConfig([
     files: ['src/shared/**/*.{ts,tsx,mjs,cjs,js}'],
     languageOptions: {
       ecmaVersion: 2023,
-      globals: globals.browser,
+      globals: globals['shared-node-browser'],
       parserOptions: {
         project: ['./tools/tsconfig.shared.json'],
         tsconfigRootDir: import.meta.dirname,
@@ -53,14 +53,85 @@ export default defineConfig([
         'warn',
         { allowConstantExport: true },
       ],
+      'no-restricted-globals': [
+        'error',
+        {
+          name: 'alert',
+          message:
+            'Use showToast or showForm from @devvit/web/client instead of alert.',
+        },
+        {
+          name: 'location',
+          message:
+            'Use navigateTo from @devvit/web/client instead of window.location.',
+        },
+      ],
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'window',
+          property: 'alert',
+          message:
+            'Use showToast or showForm from @devvit/web/client instead of window.alert.',
+        },
+        {
+          object: 'window',
+          property: 'location',
+          message:
+            'Use navigateTo from @devvit/web/client instead of window.location.',
+        },
+        {
+          object: 'globalThis',
+          property: 'alert',
+          message:
+            'Use showToast or showForm from @devvit/web/client instead of window.alert.',
+        },
+        {
+          object: 'globalThis',
+          property: 'location',
+          message:
+            'Use navigateTo from @devvit/web/client instead of window.location.',
+        },
+      ],
     },
   },
   {
     files: ['**/*.{js,mjs,cjs,ts,tsx}'],
     rules: {
       '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/ban-ts-comment': 'error',
       '@typescript-eslint/no-unused-vars': ['off'],
       'no-unused-vars': ['off'],
+      '@typescript-eslint/consistent-type-definitions': ['error', 'type'],
+      '@typescript-eslint/consistent-type-assertions': [
+        'error',
+        { assertionStyle: 'never' },
+      ],
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@devvit/public-api',
+              message: 'Use @devvit/web instead of legacy @devvit/public-api.',
+            },
+          ],
+          patterns: [
+            {
+              group: ['@devvit/public-api/*'],
+              message: 'Use @devvit/web instead of legacy @devvit/public-api.',
+            },
+          ],
+        },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'Program > ExportDefaultDeclaration',
+          message: 'Prefer named exports over default exports.',
+        },
+      ],
     },
     ignores: [
       '**/node_modules/**',

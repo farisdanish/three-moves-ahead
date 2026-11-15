@@ -3,9 +3,7 @@ import type { ArenaResponse, BoardResponse } from './api.ts';
 export type FetchResponseLike = {
   readonly ok: boolean;
   readonly status: number;
-  // Matches standard Fetch Response.json() signature without requiring type assertions.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  json(): Promise<any>;
+  json(): Promise<unknown>;
 };
 
 export type FetchLike = (
@@ -25,6 +23,35 @@ export type BoardFetchOutcome =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function isArenaResponse(value: unknown): value is ArenaResponse {
+  if (!isRecord(value) || typeof value['postMode'] !== 'string') {
+    return false;
+  }
+  if (value['postMode'] === 'archived') {
+    return (
+      typeof value['archivedDayId'] === 'string' &&
+      typeof value['serverDayId'] === 'string'
+    );
+  }
+  return (
+    (value['postMode'] === 'hub' || value['postMode'] === 'daily') &&
+    typeof value['dayId'] === 'string' &&
+    typeof value['modifier'] === 'string' &&
+    isRecord(value['hint']) &&
+    isRecord(value['composition'])
+  );
+}
+
+function isBoardResponse(value: unknown): value is BoardResponse {
+  return (
+    isRecord(value) &&
+    typeof value['dayId'] === 'string' &&
+    typeof value['modifier'] === 'string' &&
+    typeof value['totalPlayers'] === 'number' &&
+    Array.isArray(value['rows'])
+  );
 }
 
 function extractApiErrorMessage(
@@ -58,7 +85,10 @@ export async function fetchArenaState(
     }
     throw new Error(errText);
   }
-  const data: ArenaResponse = await res.json();
+  const data = await res.json();
+  if (!isArenaResponse(data)) {
+    throw new Error('Invalid /api/arena response shape');
+  }
   return data;
 }
 
@@ -85,7 +115,13 @@ export async function fetchBoardStateIndependent(
         error: detail,
       };
     }
-    const board: BoardResponse = await res.json();
+    const board = await res.json();
+    if (!isBoardResponse(board)) {
+      return {
+        ok: false,
+        error: 'Invalid leaderboard response payload.',
+      };
+    }
     return {
       ok: true,
       board,
