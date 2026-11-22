@@ -6,7 +6,15 @@ import {
   showLoginPrompt,
   showToast,
 } from '@devvit/web/client';
-import { StrictMode, useCallback, useEffect, useState } from 'react';
+import {
+  StrictMode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
   ApiErrorResponse,
@@ -33,8 +41,24 @@ import { DojoStage } from './components/DojoStage.tsx';
 import { type SpiritPose } from './components/SpiritSprite.tsx';
 import { StrategyComposer } from './components/StrategyComposer.tsx';
 import { useArenaMotion } from './useArenaMotion.ts';
+import {
+  formatUtcResetCountdown,
+  hasUtcDayRolledOver,
+} from './utcCountdown.ts';
 
 type ActiveTab = 'ranked' | 'practice' | 'board';
+
+const TAB_ORDER: readonly ActiveTab[] = ['ranked', 'practice', 'board'];
+
+const TAB_LABELS: Record<ActiveTab, string> = {
+  ranked: 'Arena',
+  practice: 'Practice',
+  board: 'Leaders',
+};
+
+function formatUtcTimestamp(nowMs: number = Date.now()): string {
+  return `${new Date(nowMs).toISOString().slice(11, 19)} UTC`;
+}
 
 const MOVE_TITLES: Record<Move, string> = {
   A: 'Attack',
@@ -124,13 +148,25 @@ function buildSpoilerSafeShareText(result: RankedResultPayload): string {
 export const App = () => {
   const { motionEnabled, dataMotion, prefersReducedMotion, toggleMotion } =
     useArenaMotion();
+  const tabBaseId = useId();
+  const tabRefs = useRef<Record<ActiveTab, HTMLButtonElement | null>>({
+    ranked: null,
+    practice: null,
+    board: null,
+  });
+  const rolloverRefreshInFlightRef = useRef<boolean>(false);
+  const copyTimerRef = useRef<number | null>(null);
 
   const [arena, setArena] = useState<ArenaResponse | null>(null);
   const [board, setBoard] = useState<BoardResponse | null>(null);
   const [boardError, setBoardError] = useState<string | null>(null);
+  const [boardUpdatedAt, setBoardUpdatedAt] = useState<string | null>(null);
   const [boardLoading, setBoardLoading] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<ActiveTab>('ranked');
+  const [utcResetLabel, setUtcResetLabel] = useState<string>(() =>
+    formatUtcResetCountdown()
+  );
 
   const [preview, setPreview] = useState<{
     readonly pose: SpiritPose;
@@ -138,8 +174,10 @@ export const App = () => {
   }>({ pose: 'ready', eventId: 0 });
 
   const [rankedMoves, setRankedMoves] = useState<Strategy>(['A', 'D', 'C']);
+  const [confirmingLock, setConfirmingLock] = useState<boolean>(false);
   const [submittingRanked, setSubmittingRanked] = useState<boolean>(false);
   const [celebrateEventId, setCelebrateEventId] = useState<number>(1);
+  const [copiedJustNow, setCopiedJustNow] = useState<boolean>(false);
   const [bannerNotice, setBannerNotice] = useState<{
     readonly tone: 'amber' | 'red' | 'emerald';
     readonly text: string;
@@ -158,6 +196,7 @@ export const App = () => {
   const [practiceReplayStep, setPracticeReplayStep] = useState<number | null>(
     null
   );
+  const [practiceError, setPracticeError] = useState<string | null>(null);
   const [runningPractice, setRunningPractice] = useState<boolean>(false);
 
   const previewMove = useCallback((move: Move): void => {
@@ -165,18 +204,6 @@ export const App = () => {
       pose: MOVE_POSES[move],
       eventId: previous.eventId + 1,
     }));
-  }, []);
-
-  const refreshBoardOnly = useCallback(async () => {
-    setBoardLoading(true);
-    const outcome = await fetchBoardStateIndependent();
-    if (outcome.ok) {
-      setBoard(outcome.board);
-      setBoardError(null);
-    } else {
-      setBoardError(outcome.error);
-    }
-    setBoardLoading(false);
   }, []);
 
   const loadArenaAndBoard = useCallback(async (preserveNotice = false) => {
@@ -197,6 +224,7 @@ export const App = () => {
           if (outcome.ok) {
             setBoard(outcome.board);
             setBoardError(null);
+            setBoardUpdatedAt(formatUtcTimestamp());
           } else {
             setBoardError(outcome.error);
           }
@@ -214,6 +242,34 @@ export const App = () => {
       setLoading(false);
     }
   }, []);
+
+  const refreshBoardOnly = useCallback(async () => {
+    setBoardLoading(true);
+    const outcome = await fetchBoardStateIndependent();
+    if (outcome.ok) {
+      setBoard(outcome.board);
+      setBoardError(null);
+      setBoardUpdatedAt(formatUtcTimestamp());
+      if (
+        arena &&
+        arena.postMode !== 'archived' &&
+        outcome.board.dayId > arena.dayId &&
+        !rolloverRefreshInFlightRef.current
+      ) {
+        rolloverRefreshInFlightRef.current = true;
+        setBannerNotice({
+          tone: 'amber',
+          text: 'UTC day rolled over — refreshed to today’s challenge.',
+        });
+        void loadArenaAndBoard(true).finally(() => {
+          rolloverRefreshInFlightRef.current = false;
+        });
+      }
+    } else {
+      setBoardError(outcome.error);
+    }
+    setBoardLoading(false);
+  }, [arena, loadArenaAndBoard]);
 
   useEffect(() => {
     let cancelled = false;
@@ -233,6 +289,7 @@ export const App = () => {
             if (outcome.ok) {
               setBoard(outcome.board);
               setBoardError(null);
+              setBoardUpdatedAt(formatUtcTimestamp());
             } else {
               setBoardError(outcome.error);
             }
@@ -256,6 +313,53 @@ export const App = () => {
     })();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  const liveArenaDayId =
+    arena && arena.postMode !== 'archived' ? arena.dayId : null;
+
+  useEffect(() => {
+    const syncUtcClockAndRollover = (): void => {
+      setUtcResetLabel(formatUtcResetCountdown());
+      if (
+        liveArenaDayId &&
+        hasUtcDayRolledOver(liveArenaDayId) &&
+        !rolloverRefreshInFlightRef.current
+      ) {
+        rolloverRefreshInFlightRef.current = true;
+        setConfirmingLock(false);
+        setBannerNotice({
+          tone: 'amber',
+          text: 'UTC day rolled over — refreshed to today’s challenge.',
+        });
+        void loadArenaAndBoard(true).finally(() => {
+          rolloverRefreshInFlightRef.current = false;
+        });
+      }
+    };
+
+    const interval = window.setInterval(syncUtcClockAndRollover, 30_000);
+    const onVisibilityOrFocus = (): void => {
+      if (document.visibilityState === 'visible') {
+        syncUtcClockAndRollover();
+      }
+    };
+    window.addEventListener('focus', onVisibilityOrFocus);
+    document.addEventListener('visibilitychange', onVisibilityOrFocus);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', onVisibilityOrFocus);
+    };
+  }, [liveArenaDayId, loadArenaAndBoard]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
     };
   }, []);
 
@@ -286,7 +390,36 @@ export const App = () => {
 
   const handleTabChange = (nextTab: ActiveTab): void => {
     setPracticeReplayStep(null);
+    setConfirmingLock(false);
     setActiveTab(nextTab);
+  };
+
+  const handleTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentTab: ActiveTab
+  ): void => {
+    const currentIndex = TAB_ORDER.indexOf(currentTab);
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % TAB_ORDER.length;
+    } else if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + TAB_ORDER.length) % TAB_ORDER.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = TAB_ORDER.length - 1;
+    }
+    if (nextIndex === null) return;
+    const nextTab = TAB_ORDER[nextIndex];
+    if (!nextTab) return;
+    event.preventDefault();
+    handleTabChange(nextTab);
+    tabRefs.current[nextTab]?.focus();
+  };
+
+  const handleRankedMovesChange = (nextMoves: Strategy): void => {
+    setConfirmingLock(false);
+    setRankedMoves(nextMoves);
   };
 
   const handleToggleMotion = (): void => {
@@ -297,6 +430,7 @@ export const App = () => {
   const handleLockRankedStrategy = async (
     liveArena: ArenaLiveResponse
   ): Promise<void> => {
+    setConfirmingLock(false);
     setSubmittingRanked(true);
     setBannerNotice(null);
 
@@ -392,6 +526,7 @@ export const App = () => {
 
   const handleRunPractice = async (): Promise<void> => {
     setRunningPractice(true);
+    setPracticeError(null);
     setPracticeReplayStep(null);
     try {
       const res = await fetch('/api/practice', {
@@ -415,7 +550,7 @@ export const App = () => {
         setPracticeReplayStep(0);
       }
     } catch (err) {
-      showToast(
+      setPracticeError(
         err instanceof Error
           ? err.message
           : 'Practice duel failed. Try running Practice again.'
@@ -425,12 +560,27 @@ export const App = () => {
     }
   };
 
+  const handleUsePracticeInRanked = (): void => {
+    setRankedMoves([...practiceMoves]);
+    setConfirmingLock(false);
+    setPracticeReplayStep(null);
+    setActiveTab('ranked');
+  };
+
   const handleCopyResult = async (
     result: RankedResultPayload
   ): Promise<void> => {
     const shareText = buildSpoilerSafeShareText(result);
     try {
       await navigator.clipboard.writeText(shareText);
+      setCopiedJustNow(true);
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        setCopiedJustNow(false);
+        copyTimerRef.current = null;
+      }, 2500);
       showToast('Spoiler-safe result copied.');
     } catch {
       showToast('Clipboard access unavailable in this browser.');
@@ -439,12 +589,19 @@ export const App = () => {
 
   if (loading && !arena) {
     return (
-      <main
-        className="dojo-root flex items-center justify-center p-4"
-        data-motion={dataMotion}
-      >
-        <div role="status" className="dojo-panel dojo-body max-w-sm text-center">
-          Loading Three Moves Ahead dojo…
+      <main className="dojo-root" data-motion={dataMotion}>
+        <div className="dojo-shell">
+          <div
+            role="status"
+            aria-busy="true"
+            className="dojo-panel space-y-3 p-4"
+          >
+            <span className="sr-only">Loading Three Moves Ahead dojo…</span>
+            <div className="dojo-skeleton h-6 w-48" />
+            <div className="dojo-skeleton h-4 w-64" />
+            <div className="dojo-skeleton h-36 w-full" />
+            <div className="dojo-skeleton h-20 w-full" />
+          </div>
         </div>
       </main>
     );
@@ -562,27 +719,29 @@ export const App = () => {
           <div className="dojo-topbar__row">
             <h1 className="dojo-title">Three Moves Ahead</h1>
 
-            <button
-              type="button"
-              className="dojo-motion-btn shrink-0"
-              aria-pressed={dataMotion === 'on'}
-              onClick={handleToggleMotion}
-              title={
-                prefersReducedMotion
-                  ? 'Motion is off because your system prefers reduced motion'
-                  : 'Toggle stage and sprite animations for this session'
-              }
-            >
-              {prefersReducedMotion
-                ? 'Motion: Reduced'
-                : dataMotion === 'on'
-                  ? 'Motion: On'
-                  : 'Motion: Off'}
-            </button>
+            {prefersReducedMotion ? (
+              <span
+                className="dojo-pill shrink-0"
+                title="Motion is off because your system prefers reduced motion"
+              >
+                Motion: Reduced
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="dojo-motion-btn shrink-0"
+                aria-pressed={dataMotion === 'on'}
+                onClick={handleToggleMotion}
+                title="Toggle stage and sprite animations for this session"
+              >
+                {dataMotion === 'on' ? 'Motion: On' : 'Motion: Off'}
+              </button>
+            )}
           </div>
 
           <p className="dojo-eyebrow dojo-num">
-            {arena.dayId} UTC · {modMeta.name} ({modMeta.shortRule})
+            {arena.dayId} UTC · Resets in {utcResetLabel} · {modMeta.name} (
+            {modMeta.shortRule})
           </p>
 
           <div className="dojo-topbar__actions">
@@ -657,37 +816,37 @@ export const App = () => {
         )}
 
         {/* Section Navigation */}
-        <nav aria-label="Arena sections" className="dojo-nav">
-          <button
-            type="button"
-            aria-pressed={activeTab === 'ranked'}
-            onClick={() => handleTabChange('ranked')}
-            className={`dojo-tab${activeTab === 'ranked' ? ' dojo-tab--active' : ''}`}
-          >
-            Arena
-          </button>
-          <button
-            type="button"
-            aria-pressed={activeTab === 'practice'}
-            onClick={() => handleTabChange('practice')}
-            className={`dojo-tab${activeTab === 'practice' ? ' dojo-tab--active' : ''}`}
-          >
-            Practice
-          </button>
-          <button
-            type="button"
-            aria-pressed={activeTab === 'board'}
-            onClick={() => handleTabChange('board')}
-            className={`dojo-tab${activeTab === 'board' ? ' dojo-tab--active' : ''}`}
-          >
-            Leaders
-          </button>
-        </nav>
+        <div role="tablist" aria-label="Arena sections" className="dojo-nav">
+          {TAB_ORDER.map((tabId) => {
+            const isSelected = activeTab === tabId;
+            return (
+              <button
+                key={tabId}
+                id={`${tabBaseId}-tab-${tabId}`}
+                ref={(el) => {
+                  tabRefs.current[tabId] = el;
+                }}
+                type="button"
+                role="tab"
+                aria-selected={isSelected}
+                aria-controls={`${tabBaseId}-panel-${tabId}`}
+                tabIndex={isSelected ? 0 : -1}
+                onClick={() => handleTabChange(tabId)}
+                onKeyDown={(e) => handleTabKeyDown(e, tabId)}
+                className={`dojo-tab${isSelected ? ' dojo-tab--active' : ''}`}
+              >
+                {TAB_LABELS[tabId]}
+              </button>
+            );
+          })}
+        </div>
 
         {/* Ranked Arena & Result Scorecard */}
         {activeTab === 'ranked' && (
           <section
-            aria-label="Ranked arena"
+            id={`${tabBaseId}-panel-ranked`}
+            role="tabpanel"
+            aria-labelledby={`${tabBaseId}-tab-ranked`}
             aria-busy={submittingRanked}
             className="dojo-panel"
           >
@@ -704,7 +863,12 @@ export const App = () => {
 
             <p className="dojo-clue-bar">
               <strong className="text-teal-200">Yesterday’s crowd clue: </strong>
-              <span>{arena.hint.message}</span>
+              <span>{arena.hint.message}</span>{' '}
+              <span className="dojo-meta">
+                {arena.hint.status === 'insufficient_data'
+                  ? `(${arena.composition.yesterdayHumanCount}/10 yesterday human entries needed; up to 9 sampled into today’s field.)`
+                  : `(From ${arena.composition.yesterdayHumanCount} yesterday human entries; up to 9 sampled into today’s 9-ghost field.)`}
+              </span>
             </p>
 
             {rankedResult ? (
@@ -728,7 +892,7 @@ export const App = () => {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div className="dojo-stat-grid">
                   <div className="dojo-stat-card">
                     <div className="dojo-meta">Shared Rank</div>
                     <div className="text-base font-bold text-white dojo-num mt-0.5">
@@ -786,15 +950,15 @@ export const App = () => {
                     onClick={() => void handleCopyResult(rankedResult)}
                     className="dojo-cta-secondary"
                   >
-                    Copy result
+                    {copiedJustNow ? 'Copied!' : 'Copy result'}
                   </button>
                 </div>
               </div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-2.5">
                 <StrategyComposer
                   moves={rankedMoves}
-                  onChange={setRankedMoves}
+                  onChange={handleRankedMovesChange}
                   disabled={submittingRanked}
                   onPreview={previewMove}
                 />
@@ -804,16 +968,53 @@ export const App = () => {
                 </p>
 
                 {arena.viewerAuthenticated ? (
-                  <button
-                    type="button"
-                    disabled={submittingRanked}
-                    onClick={() => void handleLockRankedStrategy(arena)}
-                    className="dojo-cta-primary"
-                  >
-                    {submittingRanked
-                      ? 'Locking strategy…'
-                      : `Lock strategy (${formatMovesFull(rankedMoves)})`}
-                  </button>
+                  confirmingLock ? (
+                    <div
+                      role="region"
+                      aria-label="Confirm ranked lock"
+                      className="dojo-confirm-bar space-y-2"
+                    >
+                      <p className="dojo-meta text-amber-100 font-semibold">
+                        Lock{' '}
+                        <span className="text-white">
+                          {formatMovesFull(rankedMoves)}
+                        </span>{' '}
+                        permanently for {arena.dayId} UTC? This cannot be
+                        changed today.
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={submittingRanked}
+                          onClick={() => void handleLockRankedStrategy(arena)}
+                          className="dojo-cta-primary flex-1"
+                        >
+                          {submittingRanked
+                            ? 'Locking strategy…'
+                            : 'Confirm & Lock'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={submittingRanked}
+                          onClick={() => setConfirmingLock(false)}
+                          className="dojo-cta-secondary shrink-0"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={submittingRanked}
+                      onClick={() => setConfirmingLock(true)}
+                      className="dojo-cta-primary"
+                    >
+                      {submittingRanked
+                        ? 'Locking strategy…'
+                        : `Lock strategy (${formatMovesFull(rankedMoves)})`}
+                    </button>
+                  )
                 ) : (
                   <div className="rounded-xl border border-amber-700/70 bg-amber-950/35 p-3.5 space-y-2.5">
                     <p className="dojo-body text-amber-100">
@@ -846,7 +1047,9 @@ export const App = () => {
         {/* Unranked Practice */}
         {activeTab === 'practice' && (
           <section
-            aria-label="Unranked practice"
+            id={`${tabBaseId}-panel-practice`}
+            role="tabpanel"
+            aria-labelledby={`${tabBaseId}-tab-practice`}
             aria-busy={runningPractice}
             className="dojo-panel"
           >
@@ -886,6 +1089,12 @@ export const App = () => {
                   );
                 })}
               </div>
+              <p className="dojo-meta">
+                <strong className="text-slate-100">
+                  {MODIFIER_META[practiceModifier].shortRule}
+                </strong>{' '}
+                — {MODIFIER_META[practiceModifier].detail}
+              </p>
             </div>
 
             <StrategyComposer
@@ -924,6 +1133,23 @@ export const App = () => {
                 </button>
               )}
             </div>
+
+            {practiceError && (
+              <div
+                role="alert"
+                className="dojo-alert flex flex-wrap items-center justify-between gap-2.5"
+              >
+                <span className="dojo-meta text-red-100">{practiceError}</span>
+                <button
+                  type="button"
+                  disabled={runningPractice}
+                  onClick={() => void handleRunPractice()}
+                  className="dojo-cta-secondary shrink-0"
+                >
+                  Retry Practice
+                </button>
+              </div>
+            )}
 
             {practiceResult && (
               <div
@@ -968,6 +1194,21 @@ export const App = () => {
                     );
                   })}
                 </div>
+                {!rankedResult && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <span className="dojo-meta">
+                      Independent 1v1 sparring bot (max {practiceResult.maxScore}{' '}
+                      pts).
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleUsePracticeInRanked}
+                      className="dojo-cta-secondary shrink-0"
+                    >
+                      Use in Ranked ({formatMovesFull(practiceMoves)})
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -976,17 +1217,20 @@ export const App = () => {
         {/* Daily Leaderboard */}
         {activeTab === 'board' && (
           <section
-            aria-label="Daily leaderboard"
+            id={`${tabBaseId}-panel-board`}
+            role="tabpanel"
+            aria-labelledby={`${tabBaseId}-tab-board`}
             aria-busy={boardLoading}
             className="dojo-panel"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="dojo-heading">
-                  Daily Leaderboard · {arena.dayId} UTC
+                  Daily Leaderboard · {board?.dayId ?? arena.dayId} UTC
                 </h2>
                 <p className="dojo-meta">
-                  Shared-tie ranks on raw score ·{' '}
+                  Shared-tie ranks on raw score (ties share a rank, next rank
+                  skips) ·{' '}
                   {board ? `${board.totalPlayers} total` : 'Top 50 & your rank'}
                 </p>
               </div>
@@ -1006,8 +1250,9 @@ export const App = () => {
                 className="dojo-alert flex flex-wrap items-center justify-between gap-2.5"
               >
                 <span className="dojo-meta text-red-100">
-                  Unable to load the daily leaderboard ({boardError}). Ranked
-                  Arena and Practice still work.
+                  {board
+                    ? `Showing cached standings from ${boardUpdatedAt ?? 'earlier'}. Unable to refresh (${boardError}). Ranked Arena and Practice still work.`
+                    : `Unable to load the daily leaderboard (${boardError}). Ranked Arena and Practice still work.`}
                 </span>
                 <button
                   type="button"
@@ -1028,6 +1273,7 @@ export const App = () => {
                   {board.rows.map((row, idx) => (
                     <div
                       key={`${row.label}-${idx}`}
+                      aria-current={row.isCurrentUser ? 'true' : undefined}
                       className={`flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 px-3.5 py-2.5 dojo-meta ${
                         row.isCurrentUser
                           ? 'border-l-4 border-l-orange-400 bg-orange-950/45 text-orange-100 font-semibold'

@@ -193,6 +193,11 @@ export function StrategyComposer(props: StrategyComposerProps) {
                 <span className="action-choice__art" aria-hidden="true">
                   <MoveEmblem move={move} />
                 </span>
+                {isSelected && (
+                  <span className="action-choice__check" aria-hidden="true">
+                    ✓
+                  </span>
+                )}
                 <strong className="action-choice__title">{meta.title}</strong>
                 <span className="action-choice__beats">{meta.beats}</span>
               </label>

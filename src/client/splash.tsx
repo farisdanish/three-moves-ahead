@@ -14,7 +14,7 @@ import { useArenaMotion } from './useArenaMotion.ts';
 const MODIFIER_LABELS: Record<ModifierId, string> = {
   classic: 'Classic · Win 2 / Tie 1 / Loss 0',
   draw_day: 'Draw Day · Tie 2 / Win 1 / Loss 0',
-  sweep_bonus: 'Sweep Bonus · +3 on 3 wins',
+  sweep_bonus: 'Sweep Bonus · Win 2 / Tie 1 · +3 on 3 wins',
 };
 
 export const Splash = () => {
@@ -86,7 +86,7 @@ export const Splash = () => {
 
           <p className="dojo-meta">
             {isArchivedDaily
-              ? 'Open to jump straight to today’s Evergreen Hub.'
+              ? `Today: ${utcDayId} UTC · ${MODIFIER_LABELS[modifier]}. Open to jump to the Evergreen Hub.`
               : context.userId
                 ? `Attack > Counter > Defend > Attack · u/${context.username ?? 'player'}`
                 : 'Attack > Counter > Defend > Attack · Sign in for Ranked or play Practice'}
